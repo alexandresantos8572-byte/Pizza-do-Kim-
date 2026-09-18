@@ -9,15 +9,22 @@ const QRCode = require("qrcode");
 
 const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
-
 const DB = path.join(ROOT, "orders.json");
 const DB_BACKUP = path.join(ROOT, "orders.backup.json");
 const DB_TMP = path.join(ROOT, "orders.tmp.json");
 
 // Pedido permanece por 20 horas
 const ORDER_TTL_MS = 20 * 60 * 60 * 1000;
-
 const PUSH_DB = path.join(ROOT, "push_subscriptions.json");
+
+// Pedidos Pix aguardando confirmação do Sicoob.
+// O cliente pode fechar o aplicativo: o servidor continua verificando
+// e só envia o pedido ao vendedor depois que o Pix for confirmado.
+const PIX_PENDING_DB = path.join(ROOT, "pix_pending_orders.json");
+const PIX_PENDING_TMP = path.join(ROOT, "pix_pending_orders.tmp.json");
+const PIX_PENDING_TTL_MS = 30 * 60 * 1000;
+const pixFinalizePromises = new Map();
+let pixPendingCheckRunning = false;
 
 // CONFIGURAÇÕES DO VENDEDOR
 const SELLER_PASSWORD =
@@ -177,11 +184,13 @@ function httpsRequest(
               status: response.statusCode,
               data: parsed
             });
+
             return;
           }
 
           const error = new Error(
-            "Sicoob HTTP " + response.statusCode
+            "Sicoob HTTP " +
+              response.statusCode
           );
 
           error.statusCode =
@@ -261,7 +270,8 @@ async function getSicoobToken() {
       Math.max(
         30,
         expiresIn - 30
-      ) * 1000
+      ) *
+        1000
   };
 
   return token;
@@ -278,7 +288,8 @@ async function sicoobApi(
     await getSicoobToken();
 
   return httpsRequest(
-    SICOOB_PIX_URL + apiPath,
+    SICOOB_PIX_URL +
+      apiPath,
     {
       method,
 
@@ -312,7 +323,9 @@ function createTxid() {
   let txid =
     "PDK" +
     Date.now().toString(36) +
-    crypto.randomBytes(10).toString("hex");
+    crypto
+      .randomBytes(10)
+      .toString("hex");
 
   txid =
     txid.replace(
@@ -323,7 +336,9 @@ function createTxid() {
   txid =
     txid.slice(0, 35);
 
-  while (txid.length < 26) {
+  while (
+    txid.length < 26
+  ) {
     txid += "0";
   }
 
@@ -343,7 +358,8 @@ function validateAmount(value) {
   }
 
   return number.toFixed(2);
-    }
+}
+
 async function createPixCharge(
   amount
 ) {
@@ -421,7 +437,8 @@ async function createPixCharge(
     expiresIn:
       Number(
         data.calendario &&
-          data.calendario.expiracao
+          data.calendario
+            .expiracao
       ) || 900
   };
 }
@@ -455,11 +472,14 @@ async function checkPix(
 
   const data =
     response.data || {};
-
+console.log("SICOOB PIX STATUS:", data.status, "PIX RECEBIDOS:", Array.isArray(data.pix) ? data.pix.length : 0);
   const paid =
-    data.status === "CONCLUIDA" ||
+    data.status ===
+      "CONCLUIDA" ||
     (
-      Array.isArray(data.pix) &&
+      Array.isArray(
+        data.pix
+      ) &&
       data.pix.length > 0
     );
 
@@ -480,18 +500,15 @@ async function checkPix(
 
 function readOrders() {
   const readArray = file => {
-    const parsed =
-      JSON.parse(
-        fs.readFileSync(
-          file,
-          "utf8"
-        )
-      );
+    const parsed = JSON.parse(
+      fs.readFileSync(
+        file,
+        "utf8"
+      )
+    );
 
     if (!Array.isArray(parsed)) {
-      throw new Error(
-        "Arquivo de pedidos inválido."
-      );
+      throw new Error("Arquivo de pedidos inválido.");
     }
 
     return parsed;
@@ -667,6 +684,7 @@ function sanitizeSubscription(
     }
   };
 }
+
 async function notifyOrderDelivery(
   order
 ) {
@@ -687,7 +705,9 @@ async function notifyOrderDelivery(
         order.id
     );
 
-  if (!targets.length) {
+  if (
+    !targets.length
+  ) {
     return;
   }
 
@@ -730,12 +750,15 @@ async function notifyOrderDelivery(
           if (
             error &&
             (
-              error.statusCode === 404 ||
-              error.statusCode === 410
+              error.statusCode ===
+                404 ||
+              error.statusCode ===
+                410
             )
           ) {
             dead.add(
-              item.subscription.endpoint
+              item.subscription
+                .endpoint
             );
           } else {
             console.error(
@@ -756,7 +779,8 @@ async function notifyOrderDelivery(
         item =>
           !dead.has(
             item.subscription &&
-              item.subscription.endpoint
+              item.subscription
+                .endpoint
           )
       )
     );
@@ -910,7 +934,8 @@ function isLogged(req) {
     Buffer.from(expected);
 
   return (
-    a.length === b.length &&
+    a.length ===
+      b.length &&
     crypto.timingSafeEqual(
       a,
       b
@@ -918,192 +943,312 @@ function isLogged(req) {
   );
 }
 
-function requireSeller(
-  req,
-  res,
-  api = false
-) {
-  if (isLogged(req)) {
-    return true;
-  }
-
-  if (api) {
-    send(
-      res,
-      401,
-      {
-        error:
-          "Não autorizado"
-      }
+function readPendingPixOrders() {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(
+        PIX_PENDING_DB,
+        "utf8"
+      )
     );
-  } else {
-    send(
-      res,
-      302,
-      "",
-      "text/plain; charset=utf-8",
-      {
-        Location:
-          "/login"
-      }
-    );
-  }
 
-  return false;
+    return Array.isArray(parsed)
+      ? parsed
+      : [];
+  } catch {
+    return [];
+  }
 }
 
-function sanitizeOrder(
-  body
-) {
-  const items =
-    Array.isArray(
-      body.items
-    )
-      ? body.items
-          .slice(0, 50)
-          .map(item => ({
-            title:
-              String(
-                item.title ||
-                  "Item"
-              ).slice(
-                0,
-                100
-              ),
+function savePendingPixOrders(list) {
+  const safeList = Array.isArray(list)
+    ? list
+    : [];
 
-            detail:
-              String(
-                item.detail ||
-                  ""
-              ).slice(
-                0,
-                300
-              ),
+  const data = JSON.stringify(
+    safeList,
+    null,
+    2
+  );
 
-            obs:
-              String(
-                item.obs ||
-                  ""
-              ).slice(
-                0,
-                300
-              ),
-
-            qty:
-              Math.max(
-                1,
-                Math.min(
-                  50,
-                  Number(
-                    item.qty
-                  ) || 1
-                )
-              ),
-
-            unit:
-              Math.max(
-                0,
-                Number(
-                  item.unit
-                ) || 0
-              )
-          }))
-      : [];
-
-  const subtotal =
-    items.reduce(
-      (
-        total,
-        item
-      ) =>
-        total +
-        item.qty *
-          item.unit,
-      0
+  try {
+    fs.writeFileSync(
+      PIX_PENDING_TMP,
+      data,
+      "utf8"
     );
 
-  const deliveryFee =
-    Math.max(
-      0,
-      Number(
-        body.deliveryFee
-      ) || 0
+    fs.renameSync(
+      PIX_PENDING_TMP,
+      PIX_PENDING_DB
     );
+  } catch (error) {
+    try {
+      if (fs.existsSync(PIX_PENDING_TMP)) {
+        fs.unlinkSync(PIX_PENDING_TMP);
+      }
+    } catch {}
 
-  return {
-    customer: {
-      name:
-        String(
-          body.customer &&
-            body.customer.name ||
-            ""
-        ).slice(
-          0,
-          100
-        ),
-
-      phone:
-        String(
-          body.customer &&
-            body.customer.phone ||
-            ""
-        ).slice(
-          0,
-          40
-        ),
-
-      address:
-        String(
-          body.customer &&
-            body.customer.address ||
-            ""
-        ).slice(
-          0,
-          220
-        ),
-
-      reference:
-        String(
-          body.customer &&
-            body.customer.reference ||
-            ""
-        ).slice(
-          0,
-          180
-        ),
-
-      payment:
-        String(
-          body.customer &&
-            body.customer.payment ||
-            ""
-        ).slice(
-          0,
-          80
-        ),
-
-      change:
-        String(
-          body.customer &&
-            body.customer.change ||
-            ""
-        ).slice(
-          0,
-          80
-        )
-    },
-
-    items,
-
-    subtotal,
-
-    deliveryFee,
-
-    total:
-      subtotal +
-      deliveryFee
-  };
+    throw error;
   }
+}
+
+function safePixTxid(value) {
+  return String(value || "")
+    .replace(/[^A-Za-z0-9]/g, "")
+    .slice(0, 35);
+}
+
+function addPendingPixOrder(
+  txid,
+  order,
+  amount
+) {
+  const safe = safePixTxid(txid);
+
+  if (safe.length < 26) {
+    throw new Error(
+      "TXID Pix inválido para pedido pendente."
+    );
+  }
+
+  const list = readPendingPixOrders()
+    .filter(
+      item =>
+        item &&
+        item.txid !== safe
+    );
+
+  list.push({
+    txid: safe,
+    amount: Number(amount).toFixed(2),
+    order,
+    createdAt: new Date().toISOString()
+  });
+
+  savePendingPixOrders(list);
+}
+
+function removePendingPixOrder(txid) {
+  const safe = safePixTxid(txid);
+
+  savePendingPixOrders(
+    readPendingPixOrders()
+      .filter(
+        item =>
+          item &&
+          item.txid !== safe
+      )
+  );
+}
+
+function buildStoredOrder(
+  body,
+  pixTxid = ""
+) {
+  return {
+    id: crypto.randomUUID(),
+
+    number:
+      String(Date.now())
+        .slice(-6),
+
+    createdAt:
+      new Date()
+        .toISOString(),
+
+    status: "new",
+
+    pixTxid,
+
+    ...body
+  };
+}
+
+async function finalizePendingPix(txid) {
+  const safe = safePixTxid(txid);
+
+  if (safe.length < 26) {
+    return null;
+  }
+
+  const existing = activeOrders()
+    .find(
+      order =>
+        order.pixTxid === safe
+    );
+
+  if (existing) {
+    removePendingPixOrder(safe);
+    return existing;
+  }
+
+  const pending = readPendingPixOrders()
+    .find(
+      item =>
+        item &&
+        item.txid === safe
+    );
+
+  if (!pending) {
+    return null;
+  }
+
+  if (pixFinalizePromises.has(safe)) {
+    return pixFinalizePromises.get(safe);
+  }
+
+  const job = (async () => {
+    const paidStatus = await checkPix(safe);
+
+    if (!paidStatus.paid) {
+      return null;
+    }
+
+    // Confere o valor diretamente na cobrança do Sicoob antes de liberar.
+    const charge = await sicoobApi(
+      "/cob/" +
+        encodeURIComponent(safe)
+    );
+
+    const paidAmount = Number(
+      charge.data &&
+      charge.data.valor &&
+      charge.data.valor.original
+    );
+
+    const expectedAmount = Number(
+      pending.amount
+    );
+
+    if (
+      !Number.isFinite(paidAmount) ||
+      !Number.isFinite(expectedAmount) ||
+      Math.abs(
+        paidAmount - expectedAmount
+      ) > 0.009
+    ) {
+      console.error(
+        "Pix pago com valor divergente:",
+        safe,
+        paidAmount,
+        expectedAmount
+      );
+
+      return null;
+    }
+
+    // Lê novamente antes de gravar para evitar duplicação.
+    const orders = activeOrders();
+
+    const duplicate = orders.find(
+      order =>
+        order.pixTxid === safe
+    );
+
+    if (duplicate) {
+      removePendingPixOrder(safe);
+      return duplicate;
+    }
+
+    const order = buildStoredOrder(
+      pending.order,
+      safe
+    );
+
+    orders.push(order);
+    saveOrders(orders);
+    removePendingPixOrder(safe);
+
+    console.log(
+      "Pedido Pix enviado automaticamente:",
+      order.number,
+      safe
+    );
+
+    return order;
+  })();
+
+  pixFinalizePromises.set(
+    safe,
+    job
+  );
+
+  try {
+    return await job;
+  } finally {
+    if (
+      pixFinalizePromises.get(safe) === job
+    ) {
+      pixFinalizePromises.delete(safe);
+    }
+  }
+}
+
+async function processPendingPixOrders() {
+  if (
+    pixPendingCheckRunning ||
+    !sicoobReady()
+  ) {
+    return;
+  }
+
+  pixPendingCheckRunning = true;
+
+  try {
+    const now = Date.now();
+    const current = readPendingPixOrders();
+
+    const active = current.filter(
+      item => {
+        const created = Date.parse(
+          item &&
+          item.createdAt ||
+          ""
+        );
+
+        return (
+          !Number.isFinite(created) ||
+          now - created <
+            PIX_PENDING_TTL_MS
+        );
+      }
+    );
+
+    if (
+      active.length !==
+      current.length
+    ) {
+      savePendingPixOrders(active);
+    }
+
+    for (const item of active) {
+      if (
+        !item ||
+        !item.txid
+      ) {
+        continue;
+      }
+
+      try {
+        await finalizePendingPix(
+          item.txid
+        );
+      } catch (error) {
+        console.error(
+          "Erro ao confirmar Pix automático:",
+          item.txid,
+          error &&
+            error.message ||
+            error
+        );
+      }
+    }
+  } finally {
+    pixPendingCheckRunning = false;
+  }
+}
+
 function loginPage(
   error = ""
 ) {
@@ -1244,6 +1389,201 @@ Entrar
 
 </body>
 </html>`;
+}
+
+function requireSeller(
+  req,
+  res,
+  api = false
+) {
+  if (
+    isLogged(req)
+  ) {
+    return true;
+  }
+
+  if (api) {
+    send(
+      res,
+      401,
+      {
+        error:
+          "Não autorizado"
+      }
+    );
+  } else {
+    send(
+      res,
+      302,
+      "",
+      "text/plain; charset=utf-8",
+      {
+        Location:
+          "/login"
+      }
+    );
+  }
+
+  return false;
+}
+
+function sanitizeOrder(
+  body
+) {
+  const items =
+    Array.isArray(
+      body.items
+    )
+      ? body.items
+          .slice(0, 50)
+          .map(item => ({
+            title:
+              String(
+                item.title ||
+                  "Item"
+              ).slice(
+                0,
+                100
+              ),
+
+            detail:
+              String(
+                item.detail ||
+                  ""
+              ).slice(
+                0,
+                300
+              ),
+
+            obs:
+              String(
+                item.obs ||
+                  ""
+              ).slice(
+                0,
+                300
+              ),
+
+            qty:
+              Math.max(
+                1,
+                Math.min(
+                  50,
+                  Number(
+                    item.qty
+                  ) || 1
+                )
+              ),
+
+            unit:
+              Math.max(
+                0,
+                Number(
+                  item.unit
+                ) || 0
+              )
+          }))
+      : [];
+
+  const subtotal =
+    items.reduce(
+      (
+        total,
+        item
+      ) =>
+        total +
+        item.qty *
+          item.unit,
+      0
+    );
+
+  const deliveryFee =
+    Math.max(
+      0,
+      Number(
+        body.deliveryFee
+      ) || 0
+    );
+
+  return {
+    customer: {
+      name:
+        String(
+          body.customer &&
+            body.customer
+              .name ||
+            ""
+        ).slice(
+          0,
+          100
+        ),
+
+      phone:
+        String(
+          body.customer &&
+            body.customer
+              .phone ||
+            ""
+        ).slice(
+          0,
+          40
+        ),
+
+      address:
+        String(
+          body.customer &&
+            body.customer
+              .address ||
+            ""
+        ).slice(
+          0,
+          220
+        ),
+
+      reference:
+        String(
+          body.customer &&
+            body.customer
+              .reference ||
+            ""
+        ).slice(
+          0,
+          180
+        ),
+
+      payment:
+        String(
+          body.customer &&
+            body.customer
+              .payment ||
+            ""
+        ).slice(
+          0,
+          80
+        ),
+
+      change:
+        String(
+          body.customer &&
+            body.customer
+              .change ||
+            ""
+        ).slice(
+          0,
+          80
+        )
+    },
+
+    items,
+
+    subtotal,
+
+    deliveryFee,
+
+    total:
+      subtotal +
+      deliveryFee
+  };
 }
 
 // ==========================================
@@ -1402,10 +1742,73 @@ const server =
               req
             );
 
+          let pendingOrder = null;
+
+          if (body.order) {
+            pendingOrder =
+              sanitizeOrder(
+                body.order
+              );
+
+            if (
+              !pendingOrder.items.length ||
+              !pendingOrder.customer.name ||
+              !pendingOrder.customer.phone ||
+              !pendingOrder.customer.address ||
+              pendingOrder.customer.payment !==
+                "Pix"
+            ) {
+              return send(
+                res,
+                400,
+                {
+                  error:
+                    "Dados do pedido Pix incompletos."
+                }
+              );
+            }
+
+            const requestedAmount =
+              Number(
+                validateAmount(
+                  body.amount
+                )
+              );
+
+            if (
+              !Number.isFinite(
+                requestedAmount
+              ) ||
+              Math.abs(
+                requestedAmount -
+                Number(
+                  pendingOrder.total
+                )
+              ) > 0.009
+            ) {
+              return send(
+                res,
+                409,
+                {
+                  error:
+                    "O valor do Pix não corresponde ao total do pedido."
+                }
+              );
+            }
+          }
+
           const charge =
             await createPixCharge(
               body.amount
             );
+
+          if (pendingOrder) {
+            addPendingPixOrder(
+              charge.txid,
+              pendingOrder,
+              charge.amount
+            );
+          }
 
           return send(
             res,
@@ -1561,7 +1964,7 @@ const server =
                 item.subscription &&
                 item.subscription
                   .endpoint !==
-                endpoint
+                  endpoint
             );
 
           filtered.push({
@@ -1599,7 +2002,8 @@ const server =
       // ==================================
       // PEDIDOS
       // ==================================
-          if (
+
+      if (
         pathname ===
           "/api/orders" &&
         req.method ===
@@ -1644,20 +2048,21 @@ const server =
             );
           }
 
+          // Se for Pix, confirma no Sicoob
+          // antes de aceitar o pedido.
+
           let pixTxid = "";
 
           if (
-            body.customer.payment ===
+            body.customer
+              .payment ===
             "Pix"
           ) {
             pixTxid =
               String(
                 raw.paymentTxid ||
-                (
-                  raw.customer &&
-                  raw.customer.paymentTxid
-                ) ||
-                ""
+                (raw.customer && raw.customer.paymentTxid) ||
+                  ""
               );
 
             if (!pixTxid) {
@@ -1687,39 +2092,21 @@ const server =
               );
             }
 
-            const charge =
-              await sicoobApi(
-                "/cob/" +
-                  encodeURIComponent(
-                    String(
-                      pixTxid
-                    )
-                      .replace(
-                        /[^A-Za-z0-9]/g,
-                        ""
-                      )
-                      .slice(
-                        0,
-                        35
-                      )
-                  )
-              );
-
-            const paidAmount =
-              Number(
-                charge.data &&
-                charge.data.valor &&
-                charge.data.valor.original
-              );
-
+            // Confere também o valor cobrado no Sicoob para impedir
+            // que um Pix de outro valor seja usado neste pedido.
+            const charge = await sicoobApi(
+              "/cob/" + encodeURIComponent(
+                String(pixTxid).replace(/[^A-Za-z0-9]/g, "").slice(0, 35)
+              )
+            );
+            const paidAmount = Number(
+              charge.data &&
+              charge.data.valor &&
+              charge.data.valor.original
+            );
             if (
-              !Number.isFinite(
-                paidAmount
-              ) ||
-              Math.abs(
-                paidAmount -
-                Number(body.total)
-              ) > 0.009
+              !Number.isFinite(paidAmount) ||
+              Math.abs(paidAmount - Number(body.total)) > 0.009
             ) {
               return send(
                 res,
@@ -1731,24 +2118,39 @@ const server =
               );
             }
 
-            const alreadyUsed =
-              activeOrders()
-                .some(
-                  order =>
-                    order.pixTxid ===
-                    pixTxid
-                );
+            // Se o servidor já criou este pedido automaticamente,
+            // devolve o mesmo pedido em vez de duplicar.
+            const existingOrder =
+              activeOrders().find(
+                order =>
+                  order.pixTxid ===
+                  pixTxid
+              );
 
             if (
-              alreadyUsed
+              existingOrder
             ) {
               return send(
                 res,
-                409,
-                {
-                  error:
-                    "Este pagamento Pix já foi utilizado."
-                }
+                200,
+                existingOrder
+              );
+            }
+
+            // Cliente novo: o pedido já foi salvo quando o Pix foi gerado.
+            // Finaliza pelo mesmo caminho usado pelo verificador automático.
+            const automaticOrder =
+              await finalizePendingPix(
+                pixTxid
+              );
+
+            if (
+              automaticOrder
+            ) {
+              return send(
+                res,
+                200,
+                automaticOrder
               );
             }
           }
@@ -1785,6 +2187,12 @@ const server =
             orders
           );
 
+          if (pixTxid) {
+            removePendingPixOrder(
+              pixTxid
+            );
+          }
+
           return send(
             res,
             201,
@@ -1808,7 +2216,6 @@ const server =
         }
       }
 
-      // PEDIDOS DO PAINEL
       if (
         pathname ===
           "/api/orders" &&
@@ -1837,19 +2244,17 @@ const server =
           /^\/api\/orders\/([^/]+)$/
         );
 
-      // CONSULTAR UM PEDIDO
       if (
         match &&
         req.method ===
           "GET"
       ) {
         const order =
-          activeOrders()
-            .find(
-              item =>
-                item.id ===
-                match[1]
-            );
+          activeOrders().find(
+            item =>
+              item.id ===
+              match[1]
+          );
 
         if (!order) {
           return send(
@@ -1881,7 +2286,6 @@ const server =
         );
       }
 
-      // FINALIZAR / REABRIR
       if (
         match &&
         req.method ===
@@ -1975,7 +2379,6 @@ const server =
         }
       }
 
-      // EXCLUIR MANUALMENTE
       if (
         match &&
         req.method ===
@@ -2009,8 +2412,9 @@ const server =
             ok: true
           }
         );
-              }
-            // ==================================
+      }
+
+      // ==================================
       // ARQUIVOS DO SITE
       // ==================================
 
@@ -2028,7 +2432,7 @@ const server =
           );
       } else if (
         pathname ===
-          "/vendedor"
+        "/vendedor"
       ) {
         if (
           !requireSeller(
@@ -2118,12 +2522,33 @@ const server =
     }
   );
 
+const pixAutoTimer =
+  setInterval(
+    () => {
+      processPendingPixOrders()
+        .catch(
+          error =>
+            console.error(
+              "Pix automático:",
+              error &&
+                error.message ||
+                error
+            )
+        );
+    },
+    5000
+  );
+
+if (pixAutoTimer.unref) {
+  pixAutoTimer.unref();
+}
+
 server.listen(
   PORT,
   () => {
     console.log(
       "Pizza do Kim rodando na porta " +
-      PORT
+        PORT
     );
 
     console.log(
@@ -2140,6 +2565,10 @@ server.listen(
 
     console.log(
       "Expiração dos pedidos: 20 horas"
+    );
+
+    console.log(
+      "Pix automático: ativo"
     );
 
     console.log(

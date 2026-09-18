@@ -1604,7 +1604,10 @@ body.light-theme .pix-key-row code{color:#2b211c}
       const res=await fetch("/api/pix/create",{
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({amount:total})
+        body:JSON.stringify({
+          amount:total,
+          order:buildSellerOrder()
+        })
       });
       const data=await res.json().catch(()=>({}));
       if(!res.ok) throw new Error(data.error||"Pix indisponível");
@@ -1621,7 +1624,7 @@ body.light-theme .pix-key-row code{color:#2b211c}
       if(copyBtn) copyBtn.style.display="block";
       if(q("pixTotalNote")){
         q("pixTotalNote").textContent=
-          "✅ Pix de "+brl(total)+" gerado. Copie o código, pague no seu banco e aguarde a confirmação automática.";
+          "✅ Pix de "+brl(total)+" gerado. Copie o código e pague no seu banco. Depois do pagamento, o pedido será enviado automaticamente, mesmo se você fechar o aplicativo.";
       }
 
       startPixCheck();
@@ -1979,7 +1982,7 @@ body.light-theme .pix-key-row code{color:#2b211c}
           q("pixPaymentBox")?.scrollIntoView({behavior:"smooth",block:"center"});
           if(q("pixTotalNote")){
             q("pixTotalNote").textContent=
-              "⏳ Aguardando o Sicoob confirmar o pagamento. Depois de pagar, o pedido será enviado automaticamente.";
+              "⏳ Aguardando o Sicoob confirmar o pagamento. Você pode fechar o aplicativo: quando o Pix for aprovado, o pedido será enviado automaticamente.";
           }
           return;
         }
@@ -2459,6 +2462,6 @@ Você pode acompanhar o andamento aqui no aplicativo.`);
 </script>
 
 
-<div class="app-version-footer" style="width:100%;box-sizing:border-box;text-align:center;padding:22px 12px 90px;color:rgba(255,255,255,.62);font-size:12px;font-weight:600;letter-spacing:.25px;">Pizza do Kim • Versão 1.0.1</div>
+<div class="app-version-footer" style="width:100%;box-sizing:border-box;text-align:center;padding:22px 12px 90px;color:rgba(255,255,255,.62);font-size:12px;font-weight:600;letter-spacing:.25px;">Pizza do Kim • Versão 1.0.2</div>
 </body>
 </html>
