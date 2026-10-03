@@ -545,6 +545,21 @@ body.light-theme .theme-toggle{background:#fffffff0;color:#382820;border-color:#
     .summary-line{color:#f1ece9}
     .total{color:#ff681e;border-top-color:#343434}
 
+    .history-card{margin-top:18px}
+    .history-empty{padding:22px 14px;text-align:center;color:#999;border:1px dashed rgba(255,255,255,.12);border-radius:14px}
+    .history-list{display:grid;gap:12px}
+    .history-item{border:1px solid rgba(255,255,255,.10);border-radius:15px;padding:14px;background:rgba(255,255,255,.025)}
+    .history-item-top{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+    .history-item-top strong{font-size:15px}
+    .history-date{font-size:11px;color:#999;white-space:nowrap}
+    .history-total{font-size:18px;font-weight:800;margin-top:8px}
+    .history-meta{font-size:12px;color:#aaa;margin-top:5px;line-height:1.5}
+    .history-details{margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.08);font-size:13px;line-height:1.6}
+    .history-actions{display:flex;gap:8px;margin-top:11px}
+    .history-actions button{flex:1;min-height:38px;border:0;border-radius:10px;padding:8px 10px;font-weight:700;cursor:pointer}
+    .history-clear{background:rgba(255,80,80,.10);color:#ff9b9b}
+    .history-toggle{background:rgba(255,116,30,.12);color:#ff9a5a}
+    body.light-theme .history-empty,body.light-theme .history-item{border-color:rgba(0,0,0,.10);background:rgba(0,0,0,.025)}
     .bottom-app-nav{
       position:fixed;z-index:9000;left:50%;bottom:10px;transform:translateX(-50%);
       width:min(calc(100% - 22px),850px);
@@ -1240,6 +1255,19 @@ body.light-theme .pix-key-row code{color:#2b211c}
     </aside>
   </div>
 
+  <section class="card history-card" id="historico">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+      <div>
+        <h2 style="margin-bottom:4px">📋 Histórico de pedidos</h2>
+        <p class="info" style="margin:0">Veja suas pizzas, valores e detalhes dos pedidos anteriores.</p>
+      </div>
+    </div>
+    <div id="historyList" style="margin-top:14px"></div>
+    <div class="history-actions" id="historyFooter" style="display:none">
+      <button type="button" class="history-clear" id="clearHistoryBtn">🗑️ Limpar histórico</button>
+    </div>
+  </section>
+
   <div id="notifyReminder" class="notify-reminder hidden" role="dialog" aria-modal="true" aria-labelledby="notifyReminderTitle">
     <div class="notify-reminder-box">
       <div class="notify-reminder-icon">🔔</div>
@@ -1352,7 +1380,7 @@ body.light-theme .pix-key-row code{color:#2b211c}
     {name:"Três queijos", desc:"molho, mussarela, catupiry e provolone", prices:{P:35, M:45, G:52, GG:60}},
     {name:"Crocante", desc:"molho, mussarela, catupiry, bacon e batata palha", prices:{P:35, M:45, G:52, GG:60}},
     {name:"Pepperoni", desc:"molho, mussarela, pepperoni e catupiry", prices:{P:35, M:45, G:52, GG:60}},
-    {name:"Frango com bacon", desc:"molho, frango, mussarela, milho, catupiry ou cheddar", prices:{P:35, M:45, G:52, GG:60}}
+    {name:"Frango com bacon", desc:"molho, frango, mussarela, milho, catupiry ou cheddar", prices:{P:35, M:45, G:52, GG:60}},
     {name:"Brócolis com bacon", desc:"molho, mussarela, brócolis e bacon", prices:{P:35, M:45, G:52, GG:60}}
   ];
 
@@ -2010,6 +2038,7 @@ body.light-theme .pix-key-row code{color:#2b211c}
         number:data.number,
         createdAt:data.createdAt
       }));
+      saveOrderToHistory(data);
       showOrderTracking(data);
       startOrderTracking();
 
@@ -2323,9 +2352,97 @@ Você pode acompanhar o andamento aqui no aplicativo.`);
 </script>
 
 
+<script>
+(function(){
+  const HISTORY_KEY="pizza_do_kim_order_history";
+  const MAX_HISTORY=30;
+  const listEl=document.getElementById("historyList");
+  const footerEl=document.getElementById("historyFooter");
+  const clearBtn=document.getElementById("clearHistoryBtn");
+
+  function readHistory(){
+    try{
+      const value=JSON.parse(localStorage.getItem(HISTORY_KEY)||"[]");
+      return Array.isArray(value)?value:[];
+    }catch(e){return [];}
+  }
+
+  function writeHistory(list){
+    localStorage.setItem(HISTORY_KEY,JSON.stringify(list.slice(0,MAX_HISTORY)));
+  }
+
+  window.saveOrderToHistory=function(order){
+    if(!order || !order.id) return;
+    const list=readHistory().filter(item=>item && item.id!==order.id);
+    list.unshift(order);
+    writeHistory(list);
+    renderHistory();
+  };
+
+  function money(value){
+    return Number(value||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+  }
+
+  function dateTime(value){
+    try{return new Date(value).toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"});}
+    catch(e){return "";}
+  }
+
+  function escapeHtml(value){
+    return String(value??"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[m]));
+  }
+
+  function renderHistory(){
+    if(!listEl) return;
+    const list=readHistory();
+    footerEl.style.display=list.length?"flex":"none";
+    if(!list.length){
+      listEl.innerHTML='<div class="history-empty">📦 Nenhum pedido realizado ainda.<br><span style="font-size:12px">Seus próximos pedidos aparecerão aqui automaticamente.</span></div>';
+      return;
+    }
+    listEl.innerHTML='<div class="history-list">'+list.map((order,index)=>{
+      const items=Array.isArray(order.items)?order.items:[];
+      const details=items.map(item=>`<div>• ${escapeHtml(item.qty)}x ${escapeHtml(item.title)} — ${money(Number(item.unit||0)*Number(item.qty||1))}<br><span style="color:#888">${escapeHtml(item.detail||"")}</span></div>`).join("");
+      const status=order.status==="done"?"Finalizado":"Recebido / em preparo";
+      return `<article class="history-item" data-history-index="${index}">
+        <div class="history-item-top"><strong>🍕 Pedido #${escapeHtml(order.number||"")}</strong><span class="history-date">${escapeHtml(dateTime(order.createdAt))}</span></div>
+        <div class="history-total">${money(order.total)}</div>
+        <div class="history-meta">${escapeHtml(status)} • ${escapeHtml(order.customer?.payment||"")}</div>
+        <div class="history-details" id="historyDetails${index}" style="display:none">${details||"Nenhum item"}<br><strong>Entrega:</strong> ${money(order.deliveryFee)}<br><strong>Total:</strong> ${money(order.total)}<br><strong>Endereço:</strong> ${escapeHtml(order.customer?.address||"")}</div>
+        <div class="history-actions">
+          <button type="button" class="history-toggle" data-history-toggle="${index}">👁️ Ver detalhes</button>
+        </div>
+      </article>`;
+    }).join('')+'</div>';
+
+    listEl.querySelectorAll('[data-history-toggle]').forEach(btn=>{
+      btn.addEventListener('click',()=>{
+        const index=btn.dataset.historyToggle;
+        const details=document.getElementById('historyDetails'+index);
+        if(!details) return;
+        const open=details.style.display!=="none";
+        details.style.display=open?"none":"block";
+        btn.textContent=open?"👁️ Ver detalhes":"🔽 Ocultar detalhes";
+      });
+    });
+  }
+
+  clearBtn?.addEventListener('click',()=>{
+    if(!readHistory().length) return;
+    if(confirm("Deseja apagar o histórico de pedidos deste celular?")){
+      localStorage.removeItem(HISTORY_KEY);
+      renderHistory();
+    }
+  });
+
+  renderHistory();
+})();
+</script>
+
 <nav class="bottom-app-nav" aria-label="Navegação do aplicativo">
   <button type="button" class="nav-item active" data-target="inicio"><span>⌂</span><b>Início</b></button>
   <button type="button" class="nav-item" data-target="meuPedido"><span>▣</span><b>Meu pedido</b></button>
+  <button type="button" class="nav-item" data-target="historico"><span>◷</span><b>Histórico</b></button>
   <button type="button" class="nav-item" data-target="contato"><span>☎</span><b>Contato</b></button>
   <button type="button" class="nav-item" id="themeNavBtn"><span>◐</span><b>Tema</b></button>
 </nav>
