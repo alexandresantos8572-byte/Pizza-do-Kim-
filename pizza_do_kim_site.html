@@ -1107,8 +1107,9 @@ body.light-theme .pix-key-row code{color:#2b211c}
           <div>
             <label for="sweetSize">Tamanho</label>
             <select id="sweetSize">
-              <option value="P">P — 4 fatias — R$ 35,00</option>
-              <option value="M">M — 6 fatias — R$ 42,00</option>
+              <option value="P">P — 4 fatias — R$ 38,00</option>
+              <option value="M">M — 6 fatias — R$ 48,00</option>
+              <option value="G">G — 8 fatias — R$ 60,00</option>
             </select>
           </div>
         </div>
@@ -1385,25 +1386,12 @@ body.light-theme .pix-key-row code{color:#2b211c}
     {name:"Brócolis com bacon", desc:"molho, mussarela, brócolis e bacon", prices:{P:35, M:45, G:52, GG:60}}
   ];
 
-  const sweetPrices = {P:35, M:42};
+  const sweetPrices = {P:38, M:48, G:60};
   const sweetMenu = [
     {name:"Banana com canela", desc:"mussarela, banana, canela e doce de leite", prices:sweetPrices, sweet:true},
     {name:"Dois amores", desc:"chocolate branco e chocolate preto", prices:sweetPrices, sweet:true},
-    {name:"Romeu e Julieta", desc:"goiabada e queijo", prices:{P:38, M:48, G:60}, sweet:true}
+    {name:"Romeu e Julieta", desc:"goiabada e queijo", prices:sweetPrices, sweet:true}
   ];
-  function updateSweetSizes(){
-    const name=q("sweetFlavor").value;
-    const selected=sweetMenu.find(item=>item.name===name) || sweetMenu[0];
-    const sizeSelect=q("sweetSize");
-    const previous=sizeSelect.value;
-    sizeSelect.innerHTML=Object.entries(selected.prices).map(([size,price])=>{
-      const slices={P:4,M:6,G:8}[size] || "";
-      return `<option value="${size}">${size} — ${slices} fatias — ${brl(price)}</option>`;
-    }).join("");
-    sizeSelect.value=selected.prices[previous]!==undefined ? previous : "P";
-  }
-  q("sweetFlavor").addEventListener("change",updateSweetSizes);
-  updateSweetSizes();
   const drinks = {
     "Coca-Cola 2L":14,
     "Guaraná 2L":10,
@@ -1417,6 +1405,20 @@ body.light-theme .pix-key-row code{color:#2b211c}
   const state = {size:"P", mode:"inteira", crust:"Sem borda", items:[]};
   const q = id => document.getElementById(id);
   const brl = v => new Intl.NumberFormat("pt-BR",{style:"currency",currency:"BRL"}).format(v);
+
+  function updateSweetSizes(){
+    const name=q("sweetFlavor").value;
+    const selected=sweetMenu.find(item=>item.name===name) || sweetMenu[0];
+    const sizeSelect=q("sweetSize");
+    const previous=sizeSelect.value;
+    sizeSelect.innerHTML=Object.entries(selected.prices).map(([size,price])=>{
+      const slices={P:4,M:6,G:8}[size] || "";
+      return `<option value="${size}">${size} — ${slices} fatias — ${brl(price)}</option>`;
+    }).join("");
+    sizeSelect.value=selected.prices[previous]!==undefined ? previous : "P";
+  }
+  q("sweetFlavor").addEventListener("change",updateSweetSizes);
+  updateSweetSizes();
 
   function flavorFromValue(value){
     const [type,index]=String(value).split(":");
